@@ -1,0 +1,16 @@
+{
+	"emeraldwalk.runonsave": {
+		"commands": [
+			{
+				"match": "wally.toml",
+				"isAsync": true,
+				"cmd": "wally_install.cmd"
+			},
+		]
+	},
+	"luau-lsp.ignoreGlobs": [
+		"**/_Index/**",
+	],
+	"luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+	"luau-lsp.sourcemap.autogenerate": true
+}

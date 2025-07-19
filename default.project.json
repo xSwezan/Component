@@ -1,5 +1,5 @@
 {
-	"name": "ModuleName",
+	"name": "component",
 	"tree": {
 		"$path": "lib"
 	}

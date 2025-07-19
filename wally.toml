@@ -1,9 +1,10 @@
 [package]
-name = "xswezan/modulename"
+name = "xswezan/component"
+description = "Bind component to instances using CollectionService"
 version = "0.1.0"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
+include = ["lib", "lib/**/*.luau", "wally.toml"]
 
 [dependencies]
 Janitor = "howmanysmall/janitor@1.18.3"
-Promise = "lukadev-0/typed-promise@4.0.2"

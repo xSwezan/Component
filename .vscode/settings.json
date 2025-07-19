@@ -11,6 +11,6 @@
 	"luau-lsp.ignoreGlobs": [
 		"**/_Index/**",
 	],
-	"luau-lsp.sourcemap.rojoProjectFile": "default.project.json",
+	"luau-lsp.sourcemap.rojoProjectFile": "release.project.json",
 	"luau-lsp.sourcemap.autogenerate": true
 }

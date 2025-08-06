@@ -45,6 +45,14 @@ local DEFAULT_ANCESTORS: {Instance} = {workspace}
 
 local componentsByInstance: {[Instance]: {[string]: ComponentInstance<unknown>}} = {}
 
+local function isInAncestorList<T>(self: InternalComponent<T>, instance: Instance): boolean
+	for _, ancestor: Instance in ipairs(self.__ancestors) do
+		if not instance:IsDescendantOf(ancestor) then continue end
+		return true
+	end
+	return false
+end
+
 local function extend<T>(self: InternalComponent<T>, instance: Instance): ComponentInstance<T>?
 	if self.__instanceMap[instance] then
 		return self.__instanceMap[instance]
@@ -83,7 +91,7 @@ local function extend<T>(self: InternalComponent<T>, instance: Instance): Compon
 
 	--> Register cleanup when instance is removed
 	component.Janitor:Add(instance.AncestryChanged:Connect(function(_, parent: Instance?)
-		if parent then return end
+		if parent and isInAncestorList(self, instance) then return end
 		component.Janitor:Cleanup()
 	end), "Disconnect")
 
@@ -141,18 +149,18 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 	if self.__started then return end
 	self.__started = true
 
-	--> Listen for new instances
-	self.__janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(function(instance: Instance)
+	local function tryConstructComponent(instance: Instance)
+		if not isInAncestorList(self, instance) then return end
+
 		local component: ComponentInstance<unknown>? = extend(self, instance)
 		if not component then return end
 
 		if type(component.onStart) == "function" then
 			component.onStart(component)
 		end
-	end), "Disconnect")
+	end
 
-	--> Listen for removed instances
-	self.__janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(function(instance: Instance)
+	local function tryDeconstructComponent(instance: Instance)
 		local component: ComponentInstance<unknown>? = self:FromInstance(instance)
 		if not component then return end
 
@@ -161,18 +169,14 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 		end
 
 		component.Janitor:Cleanup()
-	end), "Disconnect")
+	end
+
+	self.__janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(tryConstructComponent), "Disconnect") --> Listen for new instances
+	self.__janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(tryDeconstructComponent), "Disconnect") --> Listen for removed instances
 
 	--> Handle existing instances
 	for _, instance: Instance in ipairs(CollectionService:GetTagged(self.Tag)) do
-		task.defer(function()
-			local component: ComponentInstance<unknown>? = extend(self, instance)
-			if not component then return end
-
-			if type(component.onStart) == "function" then
-				component.onStart(component)
-			end
-		end)
+		task.defer(tryConstructComponent, instance)
 	end
 end
 

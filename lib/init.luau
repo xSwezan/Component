@@ -1,6 +1,8 @@
 local CollectionService = game:GetService("CollectionService")
 
 local Janitor = require(script.Parent.Janitor)
+local Promise = require(script.Parent.Promise)
+local Signal = require(script.Parent.Signal)
 
 -->-------<--
 --> Types <--
@@ -9,8 +11,12 @@ local Janitor = require(script.Parent.Janitor)
 export type Component<T> = {
 	Tag: string,
 
+	Started: Signal.Signal<T>,
+	Stopped: Signal.Signal<T>,
+
 	GetAll: (self: Component<T>) -> {T},
 	FromInstance: (self: Component<T>, instance: Instance) -> T?,
+	WaitForInstance: (self: Component<T>, instance: Instance) -> Promise.TypedPromise<T>,
 
 	CanExtend: ((self: Component<T>, instance: Instance) -> boolean)?,
 
@@ -30,11 +36,11 @@ export type ComponentInstance<T> = T & {
 }
 
 type InternalComponent<T> = Component<T> & {
-	__janitor: Janitor.Janitor,
-	__ancestors: {Instance},
-	__components: {[ComponentInstance<T>]: true},
-	__instanceMap: {[Instance]: ComponentInstance<T>},
-	__started: boolean,
+	_janitor: Janitor.Janitor,
+	_ancestors: {Instance},
+	_components: {[ComponentInstance<T>]: true},
+	_instanceMap: {[Instance]: ComponentInstance<T>},
+	_started: boolean,
 }
 
 -->---------<--
@@ -46,7 +52,7 @@ local DEFAULT_ANCESTORS: {Instance} = {workspace}
 local componentsByInstance: {[Instance]: {[string]: ComponentInstance<unknown>}} = {}
 
 local function isInAncestorList<T>(self: InternalComponent<T>, instance: Instance): boolean
-	for _, ancestor: Instance in ipairs(self.__ancestors) do
+	for _, ancestor: Instance in ipairs(self._ancestors) do
 		if not instance:IsDescendantOf(ancestor) then continue end
 		return true
 	end
@@ -54,8 +60,8 @@ local function isInAncestorList<T>(self: InternalComponent<T>, instance: Instanc
 end
 
 local function extend<T>(self: InternalComponent<T>, instance: Instance): ComponentInstance<T>?
-	if self.__instanceMap[instance] then
-		return self.__instanceMap[instance]
+	if self._instanceMap[instance] then
+		return self._instanceMap[instance]
 	end
 
 	if type(self.CanExtend) == "function" and not self.CanExtend(self, instance) then return end
@@ -67,8 +73,8 @@ local function extend<T>(self: InternalComponent<T>, instance: Instance): Compon
 	}, self)
 
 	--> Register in maps
-	self.__components[component] = true
-	self.__instanceMap[instance] = component
+	self._components[component] = true
+	self._instanceMap[instance] = component
 
 	if not componentsByInstance[instance] then
 		componentsByInstance[instance] = {}
@@ -77,8 +83,8 @@ local function extend<T>(self: InternalComponent<T>, instance: Instance): Compon
 
 	--> Set up cleanup
 	component.Janitor:Add(function()
-		self.__components[component] = nil
-		self.__instanceMap[instance] = nil
+		self._components[component] = nil
+		self._instanceMap[instance] = nil
 
 		if componentsByInstance[instance] then
 			componentsByInstance[instance][self.Tag] = nil
@@ -96,7 +102,7 @@ local function extend<T>(self: InternalComponent<T>, instance: Instance): Compon
 	end), "Disconnect")
 
 	-- --> If already started, initialize the component
-	-- if self.__started and type(component.onStart) == "function" then
+	-- if self._started and type(component.onStart) == "function" then
 	-- 	task.spawn(component.onStart, component)
 	-- end
 
@@ -121,11 +127,11 @@ function Component.new<T>(options: {
 	self.__tostring = function()
 		return `Component<{options.Tag}>`
 	end
-	self.__janitor = Janitor.new()
-	self.__ancestors = options.Ancestors or DEFAULT_ANCESTORS
-	self.__components = {}
-	self.__instanceMap = {}
-	self.__started = false
+	self._janitor = Janitor.new()
+	self._ancestors = options.Ancestors or DEFAULT_ANCESTORS
+	self._components = {}
+	self._instanceMap = {}
+	self._started = false
 	self.Tag = options.Tag
 	setmetatable(self, Component)
 
@@ -133,21 +139,37 @@ function Component.new<T>(options: {
 	return self :: any
 end
 
-function Component:FromInstance<T>(instance: Instance): T?
-	return self.__instanceMap[instance]
+function Component.FromInstance<T>(self: InternalComponent<T>, instance: Instance): T?
+	return self._instanceMap[instance]
 end
 
-function Component:GetAll<T>(): {ComponentInstance<T>}
+function Component.WaitForInstance<T>(self: InternalComponent<T>, instance: Instance): Promise.TypedPromise<T>
+	local componentInstance: T? = self._instanceMap[instance]
+	if componentInstance then
+		return Promise.resolve(componentInstance)
+	end
+	return Promise.fromEvent(self.Started, function(startedComponentInstance: T & ComponentInstance<unknown>)
+		local match: boolean = startedComponentInstance.Instance == instance
+		if match then
+			componentInstance = startedComponentInstance
+		end
+		return match
+	end):andThen(function()
+		return componentInstance
+	end)
+end
+
+function Component.GetAll<T>(self: InternalComponent<T>): {ComponentInstance<T>}
 	local result: {ComponentInstance<T>} = {}
-	for component in pairs(self.__components) do
+	for component in pairs(self._components) do
 		table.insert(result, component)
 	end
 	return result
 end
 
 function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
-	if self.__started then return end
-	self.__started = true
+	if self._started then return end
+	self._started = true
 
 	local function tryConstructComponent(instance: Instance)
 		if not isInAncestorList(self, instance) then return end
@@ -158,6 +180,8 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 		if type(component.onStart) == "function" then
 			component.onStart(component)
 		end
+
+		self.Started:Fire(component)
 	end
 
 	local function tryDeconstructComponent(instance: Instance)
@@ -169,10 +193,11 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 		end
 
 		component.Janitor:Cleanup()
+		self.Stopped:Fire(component)
 	end
 
-	self.__janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(tryConstructComponent), "Disconnect") --> Listen for new instances
-	self.__janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(tryDeconstructComponent), "Disconnect") --> Listen for removed instances
+	self._janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(tryConstructComponent), "Disconnect") --> Listen for new instances
+	self._janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(tryDeconstructComponent), "Disconnect") --> Listen for removed instances
 
 	--> Handle existing instances
 	for _, instance: Instance in ipairs(CollectionService:GetTagged(self.Tag)) do
@@ -181,23 +206,24 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 end
 
 function Component.Stop(self: InternalComponent<unknown>)
-	if not self.__started then return end
-	self.__started = false
+	if not self._started then return end
+	self._started = false
 
 	--> Stop all components
-	for component: ComponentInstance<unknown> in pairs(self.__components) do
+	for component: ComponentInstance<unknown> in pairs(self._components) do
 		if type(component.onStop) == "function" then
 			task.spawn(component.onStop, component)
 		end
 		component.Janitor:Cleanup()
+		self.Stopped:Fire(component)
 	end
 
 	--> Clear the component maps
-	table.clear(self.__components)
-	table.clear(self.__instanceMap)
+	table.clear(self._components)
+	table.clear(self._instanceMap)
 
 	--> Clean up listeners
-	self.__janitor:Cleanup()
+	self._janitor:Cleanup()
 end
 
 return Component

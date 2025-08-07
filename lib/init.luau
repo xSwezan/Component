@@ -133,6 +133,8 @@ function Component.new<T>(options: {
 	self._instanceMap = {}
 	self._started = false
 	self.Tag = options.Tag
+	self.Started = Signal.new()
+	self.Stopped = Signal.new()
 	setmetatable(self, Component)
 
 	self:Start()

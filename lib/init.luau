@@ -95,11 +95,11 @@ local function extend<T>(self: InternalComponent<T>, instance: Instance): Compon
 		end
 	end, true)
 
-	--> Register cleanup when instance is removed
-	component.Janitor:Add(instance.AncestryChanged:Connect(function(_, parent: Instance?)
-		if parent and isInAncestorList(self, instance) then return end
-		component.Janitor:Cleanup()
-	end), "Disconnect")
+	-- --> Register cleanup when instance is removed
+	-- component.Janitor:Add(instance.AncestryChanged:Connect(function(_, parent: Instance?)
+	-- 	if parent and isInAncestorList(self, instance) then return end
+	-- 	component.Janitor:Cleanup()
+	-- end), "Disconnect")
 
 	-- --> If already started, initialize the component
 	-- if self._started and type(component.onStart) == "function" then
@@ -121,23 +121,27 @@ function Component.new<T>(options: {
 	Ancestors: {Instance}?,
 }): Component<T>
 	assert(type(options.Tag) == "string", "Tag must be a string")
+	assert(options.Ancestors == nil or type(options.Ancestors) == "table", "Ancestors must be a table or nil")
 
 	local self = {}
 	self.__index = self
 	self.__tostring = function()
 		return `Component<{options.Tag}>`
 	end
+
 	self._janitor = Janitor.new()
 	self._ancestors = options.Ancestors or DEFAULT_ANCESTORS
 	self._components = {}
 	self._instanceMap = {}
 	self._started = false
+
 	self.Tag = options.Tag
 	self.Started = Signal.new()
 	self.Stopped = Signal.new()
-	setmetatable(self, Component)
 
+	setmetatable(self, Component)
 	self:Start()
+
 	return self :: any
 end
 
@@ -173,8 +177,10 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 	if self._started then return end
 	self._started = true
 
+	local watchingInstances: {[Instance]: RBXScriptConnection} = {}
+
 	local function tryConstructComponent(instance: Instance)
-		if not isInAncestorList(self, instance) then return end
+		if self:FromInstance(instance) then return end
 
 		local component: ComponentInstance<unknown>? = extend(self, instance)
 		if not component then return end
@@ -198,12 +204,37 @@ function Component.Start(self: InternalComponent<ComponentInstance<unknown>>)
 		self.Stopped:Fire(component)
 	end
 
-	self._janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(tryConstructComponent), "Disconnect") --> Listen for new instances
-	self._janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(tryDeconstructComponent), "Disconnect") --> Listen for removed instances
+	local function startWatchingInstance(instance: Instance)
+		if watchingInstances[instance] then return end
+		watchingInstances[instance] = self._janitor:Add(instance.AncestryChanged:Connect(function(_, parent: Instance?)
+			if parent and isInAncestorList(self, instance) then
+				tryConstructComponent(instance)
+			else
+				tryDeconstructComponent(instance)
+			end
+		end), "Disconnect")
+
+		if isInAncestorList(self, instance) then
+			tryConstructComponent(instance)
+		end
+	end
+
+	local function stopWatchingInstance(instance: Instance)
+		local connection: RBXScriptConnection? = watchingInstances[instance]
+		if connection and connection.Connected then
+			connection:Disconnect()
+		end
+		watchingInstances[instance] = nil
+
+		tryDeconstructComponent(instance)
+	end
+
+	self._janitor:Add(CollectionService:GetInstanceAddedSignal(self.Tag):Connect(startWatchingInstance), "Disconnect") --> Listen for tagged instances
+	self._janitor:Add(CollectionService:GetInstanceRemovedSignal(self.Tag):Connect(stopWatchingInstance), "Disconnect") --> Listen for untagged instances
 
 	--> Handle existing instances
 	for _, instance: Instance in ipairs(CollectionService:GetTagged(self.Tag)) do
-		task.defer(tryConstructComponent, instance)
+		task.defer(startWatchingInstance, instance)
 	end
 end
 
